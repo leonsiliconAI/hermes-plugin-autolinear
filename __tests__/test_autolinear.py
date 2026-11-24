@@ -387,7 +387,7 @@ async def test_delegated_reports_only_get_a_command_for_a_status_change(adapter,
     assert "only if this report calls for a different issue status" in turn.channel_prompt
     assert "Do not post `stay`" in turn.channel_prompt
     assert "`move leon`" in turn.channel_prompt
-    assert plugin._DELEGATION_PROMPT not in turn.channel_prompt
+    assert "always hand off every task" not in turn.channel_prompt
     assert adapter._reacting_target(turn) is None
     adapter._app.client.chat_postMessage.assert_not_awaited()
 
