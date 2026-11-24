@@ -332,7 +332,9 @@ async def _delegate(adapter, turn) -> None:
     if adapter._outbound_blocked(channel, "autolinear delegation from"):
         return
     moved = turn.raw_message.get("_autolinear") or {}
-    origin = f"slack:{moved.get('from_channel', channel)}/{moved.get('from_ts', ts)}"
+    origin_channel = moved.get("from_channel", channel)
+    origin_ts = moved.get("from_ts", ts)
+    origin = f"slack:{origin_channel}/{origin_ts}"
     marker = f"SESSION_LINK {origin} "
     if source.chat_type == "dm":
         await _send_delegation_reply(
@@ -356,7 +358,7 @@ async def _delegate(adapter, turn) -> None:
         room = await _dot_room()
         result = await _beeper("tool", "send_message", payload={
             "room_id": room, "text": text, "slack_channel": channel, "slack_thread_ts": thread_ts,
-            "idempotency_key": f"autolinear:{origin}",
+            "idempotency_key": f"autolinear:slack:{origin_channel}:{origin_ts}",
         })
         if result.get("status") != "sent" or not result.get("event_id"):
             raise RuntimeError("Beeper did not confirm the handoff")

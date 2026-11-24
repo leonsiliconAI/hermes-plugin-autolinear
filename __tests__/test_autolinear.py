@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import pathlib
+import re
 import urllib.error
 from unittest.mock import AsyncMock, MagicMock
 
@@ -104,8 +105,10 @@ def adapter(monkeypatch):
         if args == ("tool", "list_conversations"):
             return {"conversations": [{"name": "Silicon Dot", "room_id": DOT}]}
         if args == ("tool", "send_message"):
-            match = payload["idempotency_key"].removeprefix("autolinear:")
-            marker = f"SESSION_LINK {match} "
+            # Beeper's send ledger rejects keys outside this alphabet.
+            if not re.fullmatch(r"[a-zA-Z0-9_.:@!#+=\-]{1,128}", payload["idempotency_key"]):
+                raise ValueError("invalid Beeper idempotency_key")
+            marker = re.search(r"SESSION_LINK slack:[A-Z0-9]+/\d+\.\d{6} ", payload["text"])[0]
             return {"status": "sent", "event_id": "$handoff"}
         if args == ("journal",) and "after" not in payload:
             return {"head": 200}
@@ -180,7 +183,8 @@ async def test_leons_dm_is_delegated_in_its_new_issue_channel(adapter, intake):
         channel=NEW, text=LINK_TEXT, thread_ts=COPY_TS, unfurl_links=False, unfurl_media=False)
     sent = adapter.beeper.await_args_list[1].kwargs["payload"]
     assert (sent["room_id"], sent["slack_channel"], sent["slack_thread_ts"]) == (DOT, NEW, COPY_TS)
-    assert sent["idempotency_key"] == f"autolinear:slack:{DM}/{ts}"
+    assert sent["idempotency_key"] == f"autolinear:slack:{DM}:{ts}"
+    assert f"SESSION_LINK slack:{DM}/{ts} " in sent["text"]
     assert "can you check whether Rogers billed me twice?" in sent["text"]
     assert "LEON-401" in sent["text"]
 
@@ -278,6 +282,7 @@ async def test_an_existing_issue_gets_the_session_link_in_its_conversation(adapt
         channel=ISSUE, timestamp=ts, name="eyes")
     sent = adapter.beeper.await_args_list[1].kwargs["payload"]
     assert sent["slack_thread_ts"] == parent.get("thread_ts", ts)
+    assert sent["idempotency_key"] == f"autolinear:slack:{ISSUE}:{ts}"
 
 
 @pytest.mark.asyncio

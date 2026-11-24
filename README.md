@@ -26,7 +26,7 @@ A thread reply's thread goes along: Hermes keeps the thread history it read, and
 
 ## Failure
 
-When AutoLinear declines intake, fails or takes longer than 25 seconds, channel requests can still hand off from their original conversation. A DM needs an issue channel for Codex's Slack reports. The gateway reports a failed handoff or a missing session link in the request's conversation. It waits up to three minutes for Dot's link. AutoLinear retries intake once for a network error or 5xx and deduplicates it by Slack message. Beeper also uses a stable idempotency key for each Slack request.
+When AutoLinear declines intake, fails or takes longer than 25 seconds, channel requests can still hand off from their original conversation. A DM needs an issue channel for Codex's Slack reports. The gateway reports a failed handoff or a missing session link in the request's conversation. It waits up to three minutes for Dot's link. AutoLinear retries intake once for a network error or 5xx and deduplicates it by Slack message. Beeper deduplicates sends with `autolinear:slack:<original-channel>:<message-ts>`. Dot's session-link reply keeps the slash in the Slack reference (`slack:<channel>/<ts>`).
 
 The copy carries slack-as-leon's `client_msg_id` marker, so [slack-as-leon-guard](https://github.com/leonsilicon/leonsilicon.ai/blob/main/apps/hermes-plugin-slack-as-leon-guard/README.md) drops its live event, and Hermes doesn't answer the message twice. Keep that plugin enabled; this one logs a warning when it isn't. The copy's ts is also claimed, so its unfurl edits start no turn. autolinear's edit of Leon's message starts none either: Hermes claimed that message's ts before its turn was built.
 
