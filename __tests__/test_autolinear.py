@@ -496,6 +496,12 @@ async def test_the_intake_starts_before_hermes_reads_the_thread_or_files(adapter
     assert not adapter._autolinear_pending, "taken by the turn"
 
 
+def test_early_intake_ignores_a_command_after_hermes_mention(adapter, intake):
+    event = _message(GENERAL, "1794000000.000072", f"<@{adapter._bot_user_id}> !orca Check CI")
+    assert not plugin._answers_for_sure(adapter, plugin._settings(), event, "")
+    assert intake.requests == []
+
+
 @pytest.mark.asyncio
 async def test_a_message_mentioning_someone_else_starts_only_once_hermes_answers_it(
         adapter, intake):

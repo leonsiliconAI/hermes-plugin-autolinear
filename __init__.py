@@ -451,11 +451,12 @@ def _answers_for_sure(adapter, settings: dict, event: dict, team_id: str) -> boo
     if (event.get("_slack_changed_event_ts") or event.get("user") != settings["user"]
             or not _is_ordinary_message(event)):
         return False
-    text = str(event.get("text") or "")
-    if text.lstrip().startswith(("/", "!")):
-        return False
     bot = getattr(adapter, "_team_bot_user_ids", {}).get(team_id) or getattr(
         adapter, "_bot_user_id", None)
+    text = str(event.get("text") or "")
+    command_probe = text.replace(f"<@{bot}>", "") if bot else text
+    if command_probe.lstrip().startswith(("/", "!")):
+        return False
     return all(user == bot for user in _MENTION.findall(text))
 
 
