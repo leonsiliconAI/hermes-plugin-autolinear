@@ -1,0 +1,13 @@
+{
+  "name": "@-/com.leonsilicon.hermes.plugins.autolinear",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hermes plugin: each of Leon's Slack messages gets a Linear issue and channel through autolinear the moment it arrives, and Hermes answers it there.",
+  "type": "module",
+  "imports": {
+    "#plugin": "./plugin.ts"
+  },
+  "exports": {
+    ".": "./+.ts"
+  }
+}
