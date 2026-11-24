@@ -25,9 +25,9 @@ def _load(name: str, path: pathlib.Path):
 
 
 plugin = _load("autolinear", _HERE / "__init__.py")
-guard = _load("slack_as_leon_guard", _HERE.parent / "slack-as-leon-guard" / "__init__.py")
-always_react = _load("slack_always_react", _HERE.parent / "slack-always-react" / "__init__.py")
-flat_replies = _load("slack_flat_replies", _HERE.parent / "slack-flat-replies" / "__init__.py")
+guard = _load("slack_as_leon_guard", _HERE.parent / "hermes-plugin-slack-as-leon-guard" / "__init__.py")
+always_react = _load("slack_always_react", _HERE.parent / "hermes-plugin-slack-always-react" / "__init__.py")
+flat_replies = _load("slack_flat_replies", _HERE.parent / "hermes-plugin-slack-flat-replies" / "__init__.py")
 
 LEON, HERMES = "U0LEON00001", "U0HERMES001"
 DM, GENERAL, ISSUE, NEW = "D0LEONDM01", "C0GENERAL1", "C0ISSUE001", "C0NEWISSUE"
