@@ -7,7 +7,13 @@ export const pluginName = "autolinear";
 export const pluginDirectory = fileURLToPath(new URL(".", import.meta.url));
 
 /** Files that make up the deployed plugin. */
-export const pluginFiles = ["plugin.yaml", "__init__.py"] as const;
+export const pluginFiles = [
+  "plugin.yaml",
+  "__init__.py",
+  "pyproject.toml",
+  "_pythonmonkey.py",
+  "policy.cjs",
+] as const;
 
 /**
  * `.env` settings. The token (autolinear's `AUTOLINEAR_TOKEN`) and Leon's Slack user ID turn it

@@ -50,7 +50,7 @@ When [hermes22muse](../hermes-plugin-hermes22muse/README.md) is active on the sa
 ## Install
 
 ```sh
-hermes plugins install leonsiliconAI/hermes-plugin-autolinear --enable
+hermes plugins install leonsiliconAI/hermes-plugin-autolinear --enable --yes-deps
 ```
 
 See [migration steps](https://github.com/leonsilicon/leonsilicon.ai/blob/main/DEVELOPMENT.md#hermes-plugin-mirrors) for an existing install. Restart the gateway. The gateway log shows `autolinear: direct Codex delegation for Leon's Slack messages`. It uses the [Beeper inbox installation](https://github.com/leonsilicon/leonsilicon.ai/blob/main/apps/beeper-inbox/README.md) at `$BEEPER_INBOX_HOME` (default `$HERMES_HOME/beeper-inbox`).

@@ -43,6 +43,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from ._pythonmonkey import acall, call
+
 logger = logging.getLogger(__name__)
 
 _PATCHED_ATTR = "_autolinear_patched"
@@ -63,10 +65,6 @@ DOT_ROOM_ENV = "AUTOLINEAR_DOT_ROOM_ID"
 
 DEFAULT_URL = "https://autolinear.leonsilicon.ai/intake"
 DEFAULT_PREFIX = "leon"
-#: First group of the client_msg_id on posts made as Leon by slack-as-leon and autolinear.
-MARKER = "de1e6a7e"
-#: Grok Bot and Codex report markers, matching slack-as-leon-guard.
-_AGENT_REPORTS = (f"{MARKER}-b075-", f"{MARKER}-c0de-")
 TIMEOUT_SECONDS = 20.0
 RETRY_DELAY_SECONDS = 1.0
 #: How long building a turn waits for its intake before answering in place.
@@ -82,7 +80,6 @@ _THREAD_KEYS = (
     "thread_ts", "parent_user_id", "reply_count", "reply_users", "reply_users_count",
     "latest_reply", "replies", "subscribed", "last_read", "edited", "_slack_changed_event_ts",
 )
-_MENTION = re.compile(r"<@([UW][A-Z0-9]+)")
 _DELEGATION_PROMPT = (
     "Leon's rule: always hand off every task to another agent before starting the work. "
     "Use your task-routing tools to dispatch it and give the agent the context it needs. "
@@ -189,16 +186,17 @@ async def _request_intake(settings: dict, payload: dict) -> Optional[dict]:
             status, body = await asyncio.to_thread(
                 _post_json, settings["url"], settings["token"], payload, TIMEOUT_SECONDS)
         except (urllib.error.URLError, TimeoutError, OSError):
-            if attempt == 2:
+            if call(__file__, "intakeResponse", attempt, 0, False) != "retry":
                 raise
             await asyncio.sleep(RETRY_DELAY_SECONDS)
             continue
-        if status >= 500 and attempt == 1:
+        action = call(__file__, "intakeResponse", attempt, status, bool(body.get("ok")))
+        if action == "retry":
             await asyncio.sleep(RETRY_DELAY_SECONDS)
             continue
-        if status != 200:
+        if action == "fail":
             raise RuntimeError(f"autolinear answered {status}: {body.get('error')}")
-        if body.get("ok"):
+        if action == "accept":
             return body
         logger.info(
             "autolinear: left %s:%s alone (%s); answering it there",
@@ -215,14 +213,8 @@ def _pending(adapter) -> dict:
     return pending
 
 
-def _is_marked(event: dict) -> bool:
-    value = event.get("client_msg_id")
-    return isinstance(value, str) and value.startswith(f"{MARKER}-")
-
-
 def _is_ordinary_message(event: dict) -> bool:
-    return not (event.get("_hermes_reaction") or event.get("_hermes_force_process")
-                or event.get("bot_id") or _is_marked(event))
+    return call(__file__, "ordinary", event)
 
 
 async def _react_during_intake(adapter, channel_id, ts, team_id, intake) -> None:
@@ -334,32 +326,22 @@ async def _delegate(adapter, turn) -> None:
     moved = turn.raw_message.get("_autolinear") or {}
     origin_channel = moved.get("from_channel", channel)
     origin_ts = moved.get("from_ts", ts)
-    origin = f"slack:{origin_channel}/{origin_ts}"
-    marker = f"SESSION_LINK {origin} "
     if source.chat_type == "dm":
         await _send_delegation_reply(
             adapter, turn, "I couldn’t open a Slack task channel for the Codex handoff.")
         return
     thread_ts = source.thread_id or ts
-    permalink = f"https://app.slack.com/archives/{channel}/p{ts.replace('.', '')}"
     attachments = [f["permalink"] for f in turn.raw_message.get("files") or []
                    if isinstance(f, dict) and f.get("permalink")]
     context = "\n".join(filter(None, (turn.channel_context, *attachments)))
-    issue_scope = turn.raw_message[_QUICK_DELEGATE]["in_issue_channel"]
-    # The Beeper send limit is 20,000 characters, including its own handoff instructions.
-    text = (f"Start or resume the Codex task for my Slack request: {permalink}\n"
-            f"Reply in this Beeper chat with one plain-text line: {marker}<private https://chatgpt.com session URL>\n"
-            f"Keep the {origin} reference exactly as written so Hermes can post the link in Slack. "
-            "Use the session’s signed-in URL and keep its contents private.\n\n"
-            f"Request:\n{turn.text[:12000]}\n\nSlack context and files:\n{context[-5000:]}")
-    if issue_scope:
-        text += f"\n\n{_ISSUE_SCOPE_PROMPT}"
+    request = await acall(__file__, "delegationRequest", {
+        "channel": channel, "ts": ts, "thread": thread_ts, "originChannel": origin_channel,
+        "originTs": origin_ts, "text": turn.text, "context": context,
+        "issue": turn.raw_message[_QUICK_DELEGATE]["in_issue_channel"],
+    })
     try:
         room = await _dot_room()
-        result = await _beeper("tool", "send_message", payload={
-            "room_id": room, "text": text, "slack_channel": channel, "slack_thread_ts": thread_ts,
-            "idempotency_key": f"autolinear:slack:{origin_channel}:{origin_ts}",
-        })
+        result = await _beeper("tool", "send_message", payload={"room_id": room, **request["payload"]})
         if result.get("status") != "sent" or not result.get("event_id"):
             raise RuntimeError("Beeper did not confirm the handoff")
     except Exception:
@@ -372,7 +354,7 @@ async def _delegate(adapter, turn) -> None:
         # The request's Slack timestamp makes the marker unique. Start just before the journal
         # tail so an answer that arrived while Beeper verified the send is also visible.
         journal = await _beeper("journal", payload={"room_id": room, "limit": 1})
-        link = await _wait_for_session_link(room, max(0, journal["head"] - 100), marker)
+        link = await _wait_for_session_link(room, max(0, journal["head"] - 100), request["marker"])
     except Exception:
         logger.warning("autolinear: could not read the Codex session link for %s:%s", channel, ts,
                        exc_info=True)
@@ -385,11 +367,7 @@ async def _delegate(adapter, turn) -> None:
 
 
 def _where(event: dict, channel_id: str, name: str) -> str:
-    kind = event.get("channel_type") or ("im" if channel_id.startswith("D") else "")
-    place = ("a DM with Hermes" if kind == "im" else "a group DM" if kind == "mpim"
-             else f"#{name}" if name and name != channel_id else "a channel")
-    thread = event.get("thread_ts")
-    return f"a thread in {place}" if thread and thread != event.get("ts") else place
+    return call(__file__, "where", event, channel_id, name)
 
 
 async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id: str,
@@ -450,24 +428,13 @@ async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id:
 
 def _answers_for_sure(adapter, settings: dict, event: dict, team_id: str) -> bool:
     """True for a message Hermes always answers: worth starting on before its gates have run."""
-    if (event.get("_slack_changed_event_ts") or event.get("user") != settings["user"]
-            or not _is_ordinary_message(event)):
-        return False
     bot = getattr(adapter, "_team_bot_user_ids", {}).get(team_id) or getattr(
         adapter, "_bot_user_id", None)
-    text = str(event.get("text") or "")
-    command_probe = text.replace(f"<@{bot}>", "") if bot else text
-    if command_probe.lstrip().startswith(("/", "!")):
-        return False
-    return all(user == bot for user in _MENTION.findall(text))
+    return call(__file__, "answersForSure", event, settings["user"], bot)
 
 
 def _note(result: dict) -> str:
-    issue, channel = result["issue"], result["channel"]
-    return (
-        f"[autolinear: Leon sent this in {result.get('source') or 'Slack'}. It is now "
-        f"{issue['identifier']} ({issue['url']}), and this is its channel, #{channel['name']}: "
-        "answer here and keep the conversation here.]")
+    return call(__file__, "issueNote", result)
 
 
 def _add_task_prompt(msg_event, *, in_issue_channel: bool, agent_report: bool = False) -> None:
@@ -506,10 +473,7 @@ async def _move(adapter, settings: dict, event: dict, kwargs: dict, receipt_task
         return None
     new_channel, copy_ts = result["channel"]["id"], result["ts"]
     _remember(adapter, team_id, new_channel, result["channel"].get("name", ""))
-    moved = {k: v for k, v in event.items() if k not in _THREAD_KEYS}
-    moved.update(channel=new_channel, ts=copy_ts, event_ts=copy_ts, channel_type="group")
-    moved["_autolinear"] = {
-        "from_channel": channel_id, "from_ts": ts, "issue": result["issue"]["identifier"]}
+    moved = call(__file__, "copiedMessage", event, result, channel_id, ts, list(_THREAD_KEYS))
     moved_kwargs = dict(kwargs)
     moved_kwargs.update(
         channel_id=new_channel, ts=copy_ts, is_dm=False,
@@ -569,14 +533,12 @@ def wire(native, adapter) -> None:
     def prepare_turn(event, msg_event, *, in_issue_channel, quick_delegate) -> None:
         if msg_event is None:
             return
-        if (quick_delegate and not msg_event.source.is_bot and msg_event.reply_expected is not False
-                and not event.get("_slack_changed_event_ts")):
+        route = call(__file__, "turnRoute", event, quick_delegate,
+                     msg_event.source.is_bot, msg_event.reply_expected is not False)
+        if route == "delegate":
             msg_event.raw_message[_QUICK_DELEGATE] = {"in_issue_channel": in_issue_channel}
             return
-        client_id = event.get("client_msg_id") if isinstance(event, dict) else None
-        _add_task_prompt(
-            msg_event, in_issue_channel=in_issue_channel,
-            agent_report=isinstance(client_id, str) and client_id.startswith(_AGENT_REPORTS))
+        _add_task_prompt(msg_event, in_issue_channel=in_issue_channel, agent_report=route == "report")
 
     async def build_in_place(settings, event, *args, quick_delegate=False, **kwargs):
         msg_event = await build(event, *args, **kwargs)
