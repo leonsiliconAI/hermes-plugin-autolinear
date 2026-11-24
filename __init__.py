@@ -543,6 +543,10 @@ def wire(native, adapter) -> None:
         return
     tasks: set[asyncio.Task] = set()
 
+    def routed_to_muse(user, team, channel, message_id) -> bool:
+        owns_request = getattr(adapter, "_hermes22muse_owns_request", None)
+        return callable(owns_request) and owns_request(user, team, channel, message_id)
+
     @functools.wraps(prefilter)
     async def prefilter_and_start(event, *args, **kwargs):
         accepted = await prefilter(event, *args, **kwargs)
@@ -552,7 +556,9 @@ def wire(native, adapter) -> None:
         try:
             normalized, team_id, channel_id = accepted
             if isinstance(normalized, dict) and _answers_for_sure(
-                    adapter, settings, normalized, str(team_id or "")):
+                    adapter, settings, normalized, str(team_id or "")) and not routed_to_muse(
+                        normalized.get("user"), str(team_id or ""), str(channel_id or ""),
+                        normalized.get("ts")):
                 await _start(
                     adapter, settings, normalized, str(channel_id or ""), str(team_id or ""),
                     tasks)
@@ -584,6 +590,9 @@ def wire(native, adapter) -> None:
     @functools.wraps(build)
     async def build_in_issue_channel(event, *args, **kwargs):
         settings = _settings()
+        if routed_to_muse(kwargs.get("user_id"), kwargs.get("team_id") or "",
+                          kwargs.get("channel_id") or "", kwargs.get("ts")):
+            return await build(event, *args, **kwargs)
         if (settings is None or not isinstance(event, dict)
                 or kwargs.get("user_id") != settings["user"] or kwargs.get("is_command_text")
                 or not _is_ordinary_message(event)):

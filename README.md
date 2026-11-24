@@ -45,6 +45,8 @@ In `$HERMES_HOME/.env` (the dashboard's Keys page), from the `#hermes` items of 
 
 They're read on every message, so removing the token turns the plugin off once Hermes's env reloads.
 
+When [hermes22muse](../hermes-plugin-hermes22muse/README.md) is active on the same Slack adapter, AutoLinear’s Hermes plugin lets it handle requests from its configured user. The separate AutoLinear Slack app manages its own event subscriptions.
+
 ## Install
 
 ```sh

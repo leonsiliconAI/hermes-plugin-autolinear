@@ -194,6 +194,22 @@ async def test_leons_dm_is_delegated_in_its_new_issue_channel(adapter, intake):
 
 
 @pytest.mark.asyncio
+async def test_requests_routed_to_muse_reach_the_gateway_in_place(adapter, intake):
+    plugin.wire(None, adapter)
+    ts = "1794000000.000003"
+    adapter._hermes22muse_owns_request = lambda user, team, channel, message_id: (
+        (user, team, channel, message_id) == (LEON, "T0TEAM", DM, ts)
+    )
+
+    await adapter._handle_slack_message(_message(DM, ts, team="T0TEAM"))
+
+    turn = _turn(adapter)
+    assert (turn.source.chat_id, turn.message_id) == (DM, ts)
+    assert plugin._QUICK_DELEGATE not in turn.raw_message
+    assert intake.requests == []
+
+
+@pytest.mark.asyncio
 async def test_the_source_gets_a_receipt_while_intake_is_still_running(adapter, monkeypatch):
     allow_copy = asyncio.Event()
     intake_started = asyncio.Event()
