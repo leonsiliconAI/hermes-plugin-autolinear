@@ -6,7 +6,7 @@ message is edited to link the channel, and Hermes answers, and keeps the convers
 
 autolinear (autolinear.leonsilicon.ai) does the work: it creates the issue and the channel, edits
 Leon's message, and posts the message again in the channel as Leon, marked like slack-as-leon's
-posts, then answers with the channel and the copy's ts. The plugin wraps three seams of the live Slack adapter:
+posts, then answers with the channel and the copy's ts. The plugin wraps two seams of the live Slack adapter:
 
 - ``_prefilter_inbound``: the moment one of Leon's messages has passed dedup and the bot check, it
   starts the request in the background, before Hermes reads the thread or downloads files. Only
@@ -16,11 +16,8 @@ posts, then answers with the channel and the copy's ts. The plugin wraps three s
   message, so it sees exactly the messages Hermes answers. It waits for the request started early,
   or starts it then, and builds the turn as if Leon had written the copy: same text, files and
   thread history, in the new channel.
-- ``handle_message``: reacts with 👀 and hands fresh requests to Silicon Dot through Beeper.
-  It relays the Codex session link to Slack without starting a Hermes model turn.
 
-Slack task turns get Leon's delegation rule in their channel prompt. In an issue channel, Hermes
-ends ordinary turns with an explicit Autolinear command. Reports from delegated agents can be
+Hermes decides how to handle the work in its own turn. In an issue channel, it ends ordinary turns with an explicit Autolinear command. Reports from delegated agents can be
 handled silently and only get a command when the report calls for a status change.
 
 The copy's own event carries slack-as-leon's marker, so ``slack-as-leon-guard`` drops it and Hermes
@@ -39,7 +36,6 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Optional
 
 from ._pythonmonkey import acall, acall_with_host, call, on_host
@@ -48,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 _PATCHED_ATTR = "_autolinear_patched"
 _PENDING_ATTR = "_autolinear_pending"
-_QUICK_DELEGATE = "_autolinear_quick_delegate"
 _warned_guard = False
 
 #: Settings, from Hermes's environment ($HERMES_HOME/.env). Without the first two, the plugin is off.
@@ -60,7 +55,6 @@ SKIP_ENV = "AUTOLINEAR_SKIP_CHANNELS"
 #: Autolinear's bot user, whose mention starts Hermes's command line. Without it, the prompt asks for a
 #: plain "@Autolinear", which Autolinear reads too.
 BOT_ENV = "AUTOLINEAR_BOT_USER_ID"
-DOT_ROOM_ENV = "AUTOLINEAR_DOT_ROOM_ID"
 
 DEFAULT_URL = "https://autolinear.leonsilicon.ai/intake"
 DEFAULT_PREFIX = "leon"
@@ -69,8 +63,6 @@ RETRY_DELAY_SECONDS = 1.0
 #: How long building a turn waits for its intake before answering in place.
 WAIT_SECONDS = 25.0
 REACTION_TIMEOUT_SECONDS = 2.0
-SESSION_LINK_TIMEOUT_SECONDS = 180.0
-SESSION_LINK_POLL_SECONDS = 2.0
 #: How long an intake nobody waited for is kept, in case its turn is still being built.
 KEEP_SECONDS = 120.0
 
@@ -79,8 +71,6 @@ _THREAD_KEYS = (
     "thread_ts", "parent_user_id", "reply_count", "reply_users", "reply_users_count",
     "latest_reply", "replies", "subscribed", "last_read", "edited", "_slack_changed_event_ts",
 )
-def _handoff_prompt(*, agent_report: bool = False, muse: bool = False) -> str:
-    return call(__file__, "taskPrompt", True, agent_report, os.environ.get(BOT_ENV, "").strip(), muse)
 
 
 def _settings() -> Optional[dict[str, Any]]:
@@ -173,108 +163,6 @@ async def _react_during_intake(adapter, channel_id, ts, team_id, intake) -> None
         logger.debug("autolinear: could not show intake receipt for %s:%s", channel_id, ts, exc_info=True)
 
 
-async def _beeper(*args: str, payload: dict) -> dict:
-    """Call Beeper's existing local client. Its daemon owns the account and the send ledger."""
-    home = Path(os.environ.get("BEEPER_INBOX_HOME") or
-                Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / "beeper-inbox")
-    process = await asyncio.create_subprocess_exec(
-        "node", str(home / "app" / "beeper-inbox.mjs"), *args, json.dumps(payload),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-    try:
-        stdout, _ = await asyncio.wait_for(process.communicate(), 40)
-    except (TimeoutError, asyncio.CancelledError):
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise
-    if process.returncode:
-        raise RuntimeError(f"Beeper inbox {' '.join(args)} exited with {process.returncode}")
-    return json.loads(stdout)
-
-
-async def _dot_room() -> str:
-    configured = os.environ.get(DOT_ROOM_ENV, "").strip()
-    if configured:
-        return configured
-    listing = await _beeper("tool", "list_conversations", payload={
-        "query": "Silicon Dot", "network": "chatgpt", "direct_only": True, "limit": 100,
-    })
-    room = call(__file__, "selectDotRoom", listing)
-    if room is None:
-        raise RuntimeError(f"Silicon Dot's Beeper chat is ambiguous or absent; set {DOT_ROOM_ENV}")
-    return room
-
-
-async def _wait_for_session_link(room: str, cursor: int, marker: str) -> Optional[str]:
-    """Keep native timeout and cancellation around Beeper's journal requests."""
-    async def page(after):
-        return await _beeper("journal", payload={"room_id": room, "after": int(after), "text": True})
-
-    try:
-        async with asyncio.timeout(SESSION_LINK_TIMEOUT_SECONDS):
-            return await acall(__file__, "waitForLink", {
-                "page": on_host(page), "sleep": on_host(lambda: asyncio.sleep(SESSION_LINK_POLL_SECONDS)),
-            }, cursor, marker)
-    except TimeoutError:
-        return None
-
-
-async def _send_delegation_reply(adapter, turn, text: str) -> None:
-    from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event
-
-    source = turn.source
-    channel = source.chat_id
-    try:
-        if adapter._outbound_blocked(channel, "autolinear delegation reply to"):
-            return
-        params = {"channel": channel, "text": text, "unfurl_links": False, "unfurl_media": False}
-        thread_ts = adapter._resolve_thread_ts(
-            _reply_anchor_for_event(turn), _thread_metadata_for_event(turn))
-        if thread_ts:
-            params["thread_ts"] = thread_ts
-        client = adapter._get_client(channel, team_id=source.scope_id)
-        await asyncio.wait_for(client.chat_postMessage(**params), 10)
-    except Exception:
-        logger.warning("autolinear: could not post the delegation reply in %s", channel, exc_info=True)
-
-
-async def _acknowledge(adapter, turn) -> None:
-    if adapter._reactions_enabled() and turn.message_id:
-        try:
-            await asyncio.wait_for(adapter._add_reaction(
-                turn.source.chat_id, turn.message_id, "eyes", turn.source.scope_id or ""),
-                REACTION_TIMEOUT_SECONDS)
-        except Exception:
-            logger.debug("autolinear: could not react to the request", exc_info=True)
-
-
-async def _delegate(adapter, turn) -> None:
-    """Hand off the request and relay the link without entering the Hermes model loop."""
-    source = turn.source
-    channel, ts = source.chat_id, turn.message_id
-    if adapter._outbound_blocked(channel, "autolinear delegation from"):
-        return
-    async def beeper(command, payload):
-        if command == "send":
-            return await _beeper("tool", "send_message", payload=payload)
-        return await _beeper("journal", payload=payload)
-
-    def warn(stage, error):
-        logger.warning("autolinear: could not %s for %s:%s (%s)", stage, channel, ts, error)
-
-    await acall(__file__, "delegate", {
-        "room": on_host(_dot_room), "beeper": on_host(beeper),
-        "waitForLink": on_host(_wait_for_session_link),
-        "reply": on_host(lambda text: _send_delegation_reply(adapter, turn, text)),
-        "warn": warn,
-    }, {
-        "channel": channel, "ts": ts, "thread": source.thread_id or ts,
-        "dm": source.chat_type == "dm", "event": turn.raw_message,
-        "text": turn.text, "context": turn.channel_context or "",
-        "issue": turn.raw_message[_QUICK_DELEGATE]["in_issue_channel"],
-    })
-
-
 async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id: str,
                  receipt_tasks: set):
     """Starts the intake for a message in the background, unless it's in an issue channel."""
@@ -344,10 +232,9 @@ def _note(result: dict) -> str:
     return call(__file__, "issueNote", result)
 
 
-def _add_task_prompt(msg_event, *, in_issue_channel: bool, agent_report: bool = False,
-                     muse: bool = False) -> None:
+def _add_task_prompt(msg_event, *, in_issue_channel: bool, event: dict) -> None:
     result = call(__file__, "applyPrompt", msg_event.channel_prompt, in_issue_channel,
-                  agent_report, os.environ.get(BOT_ENV, "").strip(), muse)
+                  event, os.environ.get(BOT_ENV, "").strip())
     if result["silent"]:
         msg_event.reply_expected = False
     msg_event.channel_prompt = result["prompt"]
@@ -402,24 +289,17 @@ def wire(native, adapter) -> None:
         return
     build = getattr(adapter, "_build_message_event", None)
     prefilter = getattr(adapter, "_prefilter_inbound", None)
-    handle = getattr(adapter, "handle_message", None)
-    seams = (build, prefilter, handle, getattr(adapter, "_resolve_channel_name", None),
+    seams = (build, prefilter, getattr(adapter, "_resolve_channel_name", None),
              getattr(adapter, "_session_thread_ts", None),
              getattr(adapter, "_track_reacting_message", None),
-             getattr(adapter, "_reactions_enabled", None), getattr(adapter, "_get_client", None),
-             getattr(adapter, "_outbound_blocked", None), getattr(adapter, "_add_reaction", None),
-             getattr(adapter, "_remove_reaction", None), getattr(adapter, "_resolve_thread_ts", None))
+             getattr(adapter, "_reactions_enabled", None), getattr(adapter, "_add_reaction", None),
+             getattr(adapter, "_remove_reaction", None))
     if not all(callable(seam) for seam in seams):
         logger.warning(
             "autolinear: Slack adapter internals changed; Hermes answers Leon's messages where he "
             "sends them")
         return
     tasks: set[asyncio.Task] = set()
-
-    def routed_to_muse(user, team, channel, message_id) -> bool:
-        # hermes22muse sets this while it hands Leon's Slack requests to Muse on this adapter.
-        owns_request = getattr(adapter, "_hermes22muse_owns_request", None)
-        return callable(owns_request) and owns_request(user, team, channel, message_id)
 
     @functools.wraps(prefilter)
     async def prefilter_and_start(event, *args, **kwargs):
@@ -438,25 +318,11 @@ def wire(native, adapter) -> None:
             logger.warning("autolinear: could not start early", exc_info=True)
         return accepted
 
-    def prepare_turn(event, msg_event, *, in_issue_channel, quick_delegate, muse) -> None:
-        if msg_event is None:
-            return
-        route = call(__file__, "turnRoute", event, quick_delegate,
-                     msg_event.source.is_bot, msg_event.reply_expected is not False)
-        if route == "delegate":
-            msg_event.raw_message[_QUICK_DELEGATE] = {"in_issue_channel": in_issue_channel}
-            return
-        _add_task_prompt(msg_event, in_issue_channel=in_issue_channel, agent_report=route == "report",
-                         muse=muse)
-
     @functools.wraps(build)
     async def build_in_issue_channel(event, *args, **kwargs):
         settings = _settings()
         target = msg_event = None
         sender = kwargs.get("user_id")
-        muse = routed_to_muse(
-            sender, kwargs.get("team_id") or "", kwargs.get("channel_id") or "", kwargs.get("ts"))
-
         async def move():
             nonlocal target
             try:
@@ -466,7 +332,7 @@ def wire(native, adapter) -> None:
                                kwargs.get("channel_id"), kwargs.get("ts"), exc_info=True)
             return target is not None
 
-        async def build_variant(mode, quick_delegate):
+        async def build_variant(mode):
             nonlocal msg_event
             moved = mode == "moved"
             message, options = target if moved else (event, kwargs)
@@ -482,13 +348,12 @@ def wire(native, adapter) -> None:
                 in_issue = moved or (settings is not None and call(
                     __file__, "issueChannel", msg_event.source.chat_name or "", settings["prefix"],
                 ))
-                prepare_turn(event, msg_event, in_issue_channel=in_issue, quick_delegate=quick_delegate,
-                             muse=muse)
+                _add_task_prompt(msg_event, in_issue_channel=in_issue, event=event)
             if moved:
                 copy_ts, team_id = options["ts"], str(options.get("team_id") or "")
                 try:
                     # Edits keep the native reaction lifecycle. Mark the copy before an unfurl edit.
-                    if not msg_event.raw_message.get(_QUICK_DELEGATE) and adapter._reactions_enabled():
+                    if msg_event is not None and adapter._reactions_enabled():
                         adapter._track_reacting_message(team_id, copy_ts)
                     adapter._remember_processed_message_ts(copy_ts)
                 except Exception:
@@ -497,26 +362,14 @@ def wire(native, adapter) -> None:
 
         await acall_with_host(__file__, "buildReply", {"move": move, "build": build_variant},
             event if isinstance(event, dict) else None, sender, settings["user"] if settings else None,
-            kwargs.get("is_command_text"), muse)
+            kwargs.get("is_command_text"))
         return msg_event
-
-    @functools.wraps(handle)
-    async def handle_message(event, *args, **kwargs):
-        raw = event.raw_message
-        if not (isinstance(raw, dict) and raw.get(_QUICK_DELEGATE)):
-            return await handle(event, *args, **kwargs)
-        # Start both immediately. Slack availability should never delay dispatch.
-        for operation in (_acknowledge(adapter, event), _delegate(adapter, event)):
-            task = asyncio.create_task(operation)
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
 
     adapter._prefilter_inbound = prefilter_and_start
     adapter._build_message_event = build_in_issue_channel
-    adapter.handle_message = handle_message
     setattr(adapter, _PATCHED_ATTR, True)
     logger.info(
-        "autolinear: direct Codex delegation for Leon's Slack messages%s",
+        "autolinear: issue intake for Leon's Slack messages%s",
         "" if _settings() else f" (off until {TOKEN_ENV} and {USER_ENV} are set)")
 
 

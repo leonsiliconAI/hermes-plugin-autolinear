@@ -1,8 +1,8 @@
 name: autolinear
 label: autolinear
-version: 1.5.0
+version: 1.6.0
 description: >
   Gives each of Leon's Slack messages outside an issue channel its own Linear issue (Awaiting
-  Init) and channel the moment it arrives through autolinear. Acknowledges requests with an eyes reaction,
-  delegates directly to Codex through Silicon Dot and posts the session link in Slack.
+  Init) and channel through autolinear. Acknowledges intake and gives Hermes the issue context
+  and status commands for its own turn.
 author: leonsilicon
