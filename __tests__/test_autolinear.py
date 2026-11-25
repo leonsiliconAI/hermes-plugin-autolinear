@@ -195,20 +195,65 @@ async def test_leons_dm_is_delegated_in_its_new_issue_channel(adapter, intake):
     assert added == [(DM, ts, "eyes"), (NEW, COPY_TS, "eyes")]
 
 
+def _route_to_muse(adapter, threads=()):
+    """What hermes22muse sets on the adapter: it owns Leon's requests and knows its handoff threads."""
+    adapter._hermes22muse_owns_request = lambda user, team, channel, message_id: user == LEON
+    adapter._hermes22muse_handoff_thread = lambda team, channel, thread: (channel, thread) in threads
+
+
 @pytest.mark.asyncio
-async def test_requests_routed_to_muse_reach_the_gateway_in_place(adapter, intake):
+async def test_requests_routed_to_muse_get_an_issue_channel_and_a_hermes_turn(adapter, intake):
     plugin.wire(None, adapter)
+    _route_to_muse(adapter)
     ts = "1794000000.000003"
-    adapter._hermes22muse_owns_request = lambda user, team, channel, message_id: (
-        (user, team, channel, message_id) == (LEON, "T0TEAM", DM, ts)
-    )
 
-    await adapter._handle_slack_message(_message(DM, ts, team="T0TEAM"))
+    await adapter._handle_slack_message(_message(GENERAL, ts))
 
+    assert [(r["channel"], r["ts"]) for r in intake.requests] == [(GENERAL, ts)]
     turn = _turn(adapter)
-    assert (turn.source.chat_id, turn.message_id) == (DM, ts)
+    assert (turn.source.chat_id, turn.message_id) == (NEW, COPY_TS)
+    assert turn.text.startswith("[autolinear: ")
     assert plugin._QUICK_DELEGATE not in turn.raw_message
+    assert turn.channel_prompt.endswith(plugin._handoff_prompt(muse=True))
+    assert "End the turn with one line of its own" in turn.channel_prompt
+    assert "After a Muse handoff" in turn.channel_prompt
+    assert "hand off every task to another agent" not in turn.channel_prompt
+    adapter._app.client.chat_postMessage.assert_not_awaited()
+    adapter.beeper.assert_not_awaited()
+    # 👀 on the copy comes from the turn's own reaction lifecycle, as for any Hermes turn.
+    assert adapter._reacting_target(turn) is not None
+
+
+@pytest.mark.asyncio
+async def test_muse_requests_in_an_issue_channel_get_a_hermes_turn_there(adapter, intake):
+    plugin.wire(None, adapter)
+    _route_to_muse(adapter)
+
+    await adapter._handle_slack_message(_message(ISSUE, "1794000000.000004", "Show me the draft."))
+
     assert intake.requests == []
+    turn = _turn(adapter)
+    assert turn.source.chat_id == ISSUE
+    assert plugin._QUICK_DELEGATE not in turn.raw_message
+    assert turn.channel_prompt.endswith(plugin._handoff_prompt(muse=True))
+    adapter.beeper.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replies_in_a_muse_handoff_thread_stay_in_it(adapter, intake):
+    root = "1794000000.000005"
+    plugin.wire(None, adapter)
+    _route_to_muse(adapter, threads={(GENERAL, root)})
+    adapter._app.client.conversations_replies = AsyncMock(return_value={"ok": True, "messages": []})
+
+    await adapter._handle_slack_message(
+        _message(GENERAL, "1794000000.000006", "use the other card", thread_ts=root))
+
+    assert intake.requests == []
+    turn = _turn(adapter)
+    assert (turn.source.chat_id, turn.source.thread_id) == (GENERAL, root)
+    assert plugin._QUICK_DELEGATE not in turn.raw_message
+    assert "hand off every task to another agent" not in (turn.channel_prompt or "")
 
 
 @pytest.mark.asyncio

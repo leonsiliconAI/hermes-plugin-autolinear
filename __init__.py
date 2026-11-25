@@ -79,8 +79,8 @@ _THREAD_KEYS = (
     "thread_ts", "parent_user_id", "reply_count", "reply_users", "reply_users_count",
     "latest_reply", "replies", "subscribed", "last_read", "edited", "_slack_changed_event_ts",
 )
-def _handoff_prompt(*, agent_report: bool = False) -> str:
-    return call(__file__, "taskPrompt", True, agent_report, os.environ.get(BOT_ENV, "").strip())
+def _handoff_prompt(*, agent_report: bool = False, muse: bool = False) -> str:
+    return call(__file__, "taskPrompt", True, agent_report, os.environ.get(BOT_ENV, "").strip(), muse)
 
 
 def _settings() -> Optional[dict[str, Any]]:
@@ -285,6 +285,8 @@ async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id:
         return pending[key]
     if channel_id in settings["skip"]:
         return None
+    if _in_muse_thread(adapter, event, team_id, channel_id, ts):
+        return None
     name = str(await adapter._resolve_channel_name(channel_id, team_id=team_id) or "")
     if call(__file__, "issueChannel", name, settings["prefix"]):
         return None
@@ -317,6 +319,20 @@ async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id:
     return task
 
 
+def _in_muse_thread(adapter, event: dict, team_id: str, channel_id: str, ts: str) -> bool:
+    """A reply in a thread that relays a hermes22muse handoff stays there, so Hermes passes it on."""
+    thread = str(event.get("thread_ts") or "")
+    handoff_thread = getattr(adapter, "_hermes22muse_handoff_thread", None)
+    if not thread or thread == ts or not callable(handoff_thread):
+        return False
+    try:
+        return bool(handoff_thread(team_id, channel_id, thread))
+    except Exception:
+        logger.warning("autolinear: could not check hermes22muse's thread %s:%s", channel_id, thread,
+                       exc_info=True)
+        return True
+
+
 def _answers_for_sure(adapter, settings: dict, event: dict, team_id: str) -> bool:
     """True for a message Hermes always answers: worth starting on before its gates have run."""
     bot = getattr(adapter, "_team_bot_user_ids", {}).get(team_id) or getattr(
@@ -328,9 +344,10 @@ def _note(result: dict) -> str:
     return call(__file__, "issueNote", result)
 
 
-def _add_task_prompt(msg_event, *, in_issue_channel: bool, agent_report: bool = False) -> None:
+def _add_task_prompt(msg_event, *, in_issue_channel: bool, agent_report: bool = False,
+                     muse: bool = False) -> None:
     result = call(__file__, "applyPrompt", msg_event.channel_prompt, in_issue_channel,
-                  agent_report, os.environ.get(BOT_ENV, "").strip())
+                  agent_report, os.environ.get(BOT_ENV, "").strip(), muse)
     if result["silent"]:
         msg_event.reply_expected = False
     msg_event.channel_prompt = result["prompt"]
@@ -400,6 +417,7 @@ def wire(native, adapter) -> None:
     tasks: set[asyncio.Task] = set()
 
     def routed_to_muse(user, team, channel, message_id) -> bool:
+        # hermes22muse sets this while it hands Leon's Slack requests to Muse on this adapter.
         owns_request = getattr(adapter, "_hermes22muse_owns_request", None)
         return callable(owns_request) and owns_request(user, team, channel, message_id)
 
@@ -412,9 +430,7 @@ def wire(native, adapter) -> None:
         try:
             normalized, team_id, channel_id = accepted
             if isinstance(normalized, dict) and _answers_for_sure(
-                    adapter, settings, normalized, str(team_id or "")) and not routed_to_muse(
-                        normalized.get("user"), str(team_id or ""), str(channel_id or ""),
-                        normalized.get("ts")):
+                    adapter, settings, normalized, str(team_id or "")):
                 await _start(
                     adapter, settings, normalized, str(channel_id or ""), str(team_id or ""),
                     tasks)
@@ -422,7 +438,7 @@ def wire(native, adapter) -> None:
             logger.warning("autolinear: could not start early", exc_info=True)
         return accepted
 
-    def prepare_turn(event, msg_event, *, in_issue_channel, quick_delegate) -> None:
+    def prepare_turn(event, msg_event, *, in_issue_channel, quick_delegate, muse) -> None:
         if msg_event is None:
             return
         route = call(__file__, "turnRoute", event, quick_delegate,
@@ -430,12 +446,16 @@ def wire(native, adapter) -> None:
         if route == "delegate":
             msg_event.raw_message[_QUICK_DELEGATE] = {"in_issue_channel": in_issue_channel}
             return
-        _add_task_prompt(msg_event, in_issue_channel=in_issue_channel, agent_report=route == "report")
+        _add_task_prompt(msg_event, in_issue_channel=in_issue_channel, agent_report=route == "report",
+                         muse=muse)
 
     @functools.wraps(build)
     async def build_in_issue_channel(event, *args, **kwargs):
         settings = _settings()
         target = msg_event = None
+        sender = kwargs.get("user_id")
+        muse = routed_to_muse(
+            sender, kwargs.get("team_id") or "", kwargs.get("channel_id") or "", kwargs.get("ts"))
 
         async def move():
             nonlocal target
@@ -458,11 +478,12 @@ def wire(native, adapter) -> None:
                 logger.warning("autolinear: could not build the turn in %s; answering in place",
                                options["channel_id"], exc_info=True)
                 return False
-            if mode != "native" and msg_event is not None and not options.get("is_command_text"):
+            if msg_event is not None and not options.get("is_command_text"):
                 in_issue = moved or (settings is not None and call(
                     __file__, "issueChannel", msg_event.source.chat_name or "", settings["prefix"],
                 ))
-                prepare_turn(event, msg_event, in_issue_channel=in_issue, quick_delegate=quick_delegate)
+                prepare_turn(event, msg_event, in_issue_channel=in_issue, quick_delegate=quick_delegate,
+                             muse=muse)
             if moved:
                 copy_ts, team_id = options["ts"], str(options.get("team_id") or "")
                 try:
@@ -474,12 +495,9 @@ def wire(native, adapter) -> None:
                     logger.warning("autolinear: could not track %s", copy_ts, exc_info=True)
             return True
 
-        sender = kwargs.get("user_id")
         await acall_with_host(__file__, "buildReply", {"move": move, "build": build_variant},
             event if isinstance(event, dict) else None, sender, settings["user"] if settings else None,
-            kwargs.get("is_command_text"), routed_to_muse(
-                sender, kwargs.get("team_id") or "", kwargs.get("channel_id") or "", kwargs.get("ts"),
-            ))
+            kwargs.get("is_command_text"), muse)
         return msg_event
 
     @functools.wraps(handle)

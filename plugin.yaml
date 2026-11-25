@@ -1,6 +1,6 @@
 name: autolinear
 label: autolinear
-version: 1.4.6
+version: 1.5.0
 description: >
   Gives each of Leon's Slack messages outside an issue channel its own Linear issue (Awaiting
   Init) and channel the moment it arrives through autolinear. Acknowledges requests with an eyes reaction,

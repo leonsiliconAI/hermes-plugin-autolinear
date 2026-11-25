@@ -151,8 +151,10 @@ export function delegationRequest({
 
 const delegationPrompt =
   "Leon's rule: always hand off every task to another agent before starting the work. Use your task-routing tools to dispatch it and give the agent the context it needs. You own the coordination, follow-up, and reporting. Route any remaining work back to the assigned agent or hand it to another available agent. If a handoff fails, try another agent. If no agent can take it, report what blocked delegation. Dispatch through a tool that returns before the assigned agent finishes. End your turn after the handoff. For a handoff through another service, include where Leon asked so you can route the result back. When the result comes back, verify it and give Leon the substantive answer in the same Slack conversation.";
-export function taskPrompt(inIssue: boolean, report: boolean, bot: string) {
-  if (!inIssue) return delegationPrompt;
+// With hermes22muse, Leon's requests go to Muse through muse_handoff, which waits for Muse's answer in
+// the same turn, so the Codex delegation rules above don't apply.
+export function taskPrompt(inIssue: boolean, report: boolean, bot: string, muse = false) {
+  if (!inIssue) return muse ? "" : delegationPrompt;
   const mention = bot ? "<@" + bot + ">" : "@Autolinear";
   const instructions = report
     ? "This is a report from an agent already assigned to the task. Follow up if they " +
@@ -161,15 +163,17 @@ export function taskPrompt(inIssue: boolean, report: boolean, bot: string) {
       "Send one Autolinear command only if this report calls for a different issue status. " +
       "If the status should stay the same, omit the command entirely, even if earlier " +
       "turns used `stay`. Do not post `stay` for a delegated agent's report. "
-    : delegationPrompt +
-      "\n\n" +
+    : (muse ? "" : delegationPrompt + "\n\n") +
       "This is a Linear issue's channel. End the turn with one line of its own that tells " +
       "Autolinear what to do with the channel. ";
   const stay = report ? "" : ", or `stay` (leave the status as it is)";
   const dispatch = report
     ? ""
-    : "For a new task, send `move executing` after the handoff succeeds and end the turn. " +
-      "When the result comes back, give Leon the answer and move the issue based on the result. ";
+    : muse
+      ? "After a Muse handoff, give Leon the checked answer here and move the issue based on " +
+        "the result. "
+      : "For a new task, send `move executing` after the handoff succeeds and end the turn. " +
+        "When the result comes back, give Leon the answer and move the issue based on the result. ";
   const reminder = report
     ? ""
     : " When you forget, Autolinear reminds you here. Answer it with the line.";
@@ -200,9 +204,10 @@ export function applyPrompt(
   inIssue: boolean,
   report: boolean,
   bot: string,
+  muse = false,
 ) {
   return {
-    prompt: [current, taskPrompt(inIssue, report, bot)].filter(Boolean).join("\n\n"),
+    prompt: [current, taskPrompt(inIssue, report, bot, muse)].filter(Boolean).join("\n\n"),
     silent: inIssue && report,
   };
 }
@@ -384,10 +389,12 @@ export function issueChannel(name: string, prefix: string) {
 }
 
 interface BuildHost {
-  build(mode: "native" | "local" | "moved", quickDelegate: boolean): Promise<boolean>;
+  build(mode: "local" | "moved", quickDelegate: boolean): Promise<boolean>;
   move(): Promise<boolean>;
 }
 
+// A request hermes22muse owns still gets its issue and channel, but Hermes's own turn hands it to
+// Muse there instead of the direct Codex delegation.
 export async function buildReply(
   host: BuildHost,
   event: Message | undefined,
@@ -396,11 +403,10 @@ export async function buildReply(
   command: boolean,
   museOwns: boolean,
 ) {
-  if (museOwns) {
-    await host.build("native", false);
-  } else if (!canMove(event, sender, owner, command)) {
+  const quickDelegate = !museOwns;
+  if (!canMove(event, sender, owner, command)) {
     await host.build("local", false);
-  } else if (!(await host.move()) || !(await host.build("moved", true))) {
-    await host.build("local", true);
+  } else if (!(await host.move()) || !(await host.build("moved", quickDelegate))) {
+    await host.build("local", quickDelegate);
   }
 }

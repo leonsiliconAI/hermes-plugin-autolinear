@@ -69,18 +69,18 @@ function delegationRequest({ channel, ts, thread, originChannel, originTs, text,
 	};
 }
 const delegationPrompt = "Leon's rule: always hand off every task to another agent before starting the work. Use your task-routing tools to dispatch it and give the agent the context it needs. You own the coordination, follow-up, and reporting. Route any remaining work back to the assigned agent or hand it to another available agent. If a handoff fails, try another agent. If no agent can take it, report what blocked delegation. Dispatch through a tool that returns before the assigned agent finishes. End your turn after the handoff. For a handoff through another service, include where Leon asked so you can route the result back. When the result comes back, verify it and give Leon the substantive answer in the same Slack conversation.";
-function taskPrompt(inIssue, report, bot) {
-	if (!inIssue) return delegationPrompt;
+function taskPrompt(inIssue, report, bot, muse = false) {
+	if (!inIssue) return muse ? "" : delegationPrompt;
 	const mention = bot ? "<@" + bot + ">" : "@Autolinear";
-	const instructions = report ? "This is a report from an agent already assigned to the task. Follow up if they need coordination, and update Leon when there is something he needs to know. If there is no action or meaningful update, return NO_REPLY. Send one Autolinear command only if this report calls for a different issue status. If the status should stay the same, omit the command entirely, even if earlier turns used `stay`. Do not post `stay` for a delegated agent's report. " : delegationPrompt + "\n\n" + "This is a Linear issue's channel. End the turn with one line of its own that tells " + "Autolinear what to do with the channel. ";
+	const instructions = report ? "This is a report from an agent already assigned to the task. Follow up if they need coordination, and update Leon when there is something he needs to know. If there is no action or meaningful update, return NO_REPLY. Send one Autolinear command only if this report calls for a different issue status. If the status should stay the same, omit the command entirely, even if earlier turns used `stay`. Do not post `stay` for a delegated agent's report. " : (muse ? "" : delegationPrompt + "\n\n") + "This is a Linear issue's channel. End the turn with one line of its own that tells Autolinear what to do with the channel. ";
 	const stay = report ? "" : ", or `stay` (leave the status as it is)";
-	const dispatch = report ? "" : "For a new task, send `move executing` after the handoff succeeds and end the turn. When the result comes back, give Leon the answer and move the issue based on the result. ";
+	const dispatch = report ? "" : muse ? "After a Muse handoff, give Leon the checked answer here and move the issue based on the result. " : "For a new task, send `move executing` after the handoff succeeds and end the turn. When the result comes back, give Leon the answer and move the issue based on the result. ";
 	const reminder = report ? "" : " When you forget, Autolinear reminds you here. Answer it with the line.";
 	return issueScope + " " + instructions + "Start that line with " + mention + ", written exactly so, then one of: `move done` (nothing is left for anyone, even after a thanks), `move leon` (Leon needs to see, decide or do something; mention him in your message), `move trigger --who \"<who>\"` (waiting on someone else), `move trigger --event \"<what>\" --stop YYYY-MM-DD` (waiting for an event until a stop date), `move date --start <RFC 3339 time or YYYY-MM-DD>` (work starts later), `move executing` (a delegated agent is working on it)" + stay + ". " + dispatch + "Set the issue status through Autolinear. Mentioning Leon only notifies him." + reminder + " When Autolinear says a command didn't work, send a corrected line.";
 }
-function applyPrompt(current, inIssue, report, bot) {
+function applyPrompt(current, inIssue, report, bot, muse = false) {
 	return {
-		prompt: [current, taskPrompt(inIssue, report, bot)].filter(Boolean).join("\n\n"),
+		prompt: [current, taskPrompt(inIssue, report, bot, muse)].filter(Boolean).join("\n\n"),
 		silent: inIssue && report
 	};
 }
@@ -187,9 +187,9 @@ function issueChannel(name, prefix) {
 	return /^\p{Decimal_Number}+(?:-|$)/u.test(name.slice(prefix.length + 1));
 }
 async function buildReply(host, event, sender, owner, command, museOwns) {
-	if (museOwns) await host.build("native", false);
-	else if (!canMove(event, sender, owner, command)) await host.build("local", false);
-	else if (!await host.move() || !await host.build("moved", true)) await host.build("local", true);
+	const quickDelegate = !museOwns;
+	if (!canMove(event, sender, owner, command)) await host.build("local", false);
+	else if (!await host.move() || !await host.build("moved", quickDelegate)) await host.build("local", quickDelegate);
 }
 exports.answersForSure = answersForSure;
 exports.applyPrompt = applyPrompt;

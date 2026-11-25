@@ -45,7 +45,7 @@ In `$HERMES_HOME/.env` (the dashboard's Keys page), from the `#hermes` items of 
 
 They're read on every message, so removing the token turns the plugin off once Hermes's env reloads.
 
-When [hermes22muse](../hermes-plugin-hermes22muse/README.md) is active on the same Slack adapter, AutoLinear’s Hermes plugin lets it handle requests from its configured user. The separate AutoLinear Slack app manages its own event subscriptions.
+When [hermes22muse](../hermes-plugin-hermes22muse/README.md) 2.4.0 or later is active on the same Slack adapter, Leon’s requests still get their issue and channel, but without the direct Codex handoff. Hermes’s own turn in the issue channel hands the request to Muse with `muse_handoff`, and its prompt keeps the Autolinear command rule without the Codex delegation rule. Leon’s replies in a thread that relays a Muse handoff stay in that thread. The separate AutoLinear Slack app’s message events stay paused while hermes22muse runs, so intake starts in the gateway.
 
 ## Install
 
