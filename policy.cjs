@@ -6,6 +6,10 @@ const groups = {
 function agentGroup(id) {
 	if (typeof id === "string") return Object.values(groups).find((group) => id.startsWith("de1e6a7e-" + group + "-"));
 }
+function issueChannel(name, prefix) {
+	if (!name.startsWith(prefix + "-")) return false;
+	return /^\p{Decimal_Number}+(?:-|$)/u.test(name.slice(prefix.length + 1));
+}
 // policy.ts
 function ordinary(event) {
 	return !(event._hermes_reaction || event._hermes_force_process || event.bot_id || typeof event.client_msg_id === "string" && event.client_msg_id.startsWith("de1e6a7e-"));
@@ -100,10 +104,6 @@ function canMove(event, sender, owner, command) {
 }
 function shouldReact(event, ts) {
 	return Boolean(ts && !event?._slack_changed_event_ts);
-}
-function issueChannel(name, prefix) {
-	if (!name.startsWith(prefix + "-")) return false;
-	return /^\p{Decimal_Number}+(?:-|$)/u.test(name.slice(prefix.length + 1));
 }
 async function buildReply(host, event, sender, owner, command) {
 	if (!canMove(event, sender, owner, command)) await host.build("local");

@@ -1,4 +1,6 @@
-import { agentGroup, marker } from "#slack";
+import { agentGroup, issueChannel, marker } from "#slack";
+
+export { issueChannel };
 
 type Message = Record<string, unknown> & {
   client_msg_id?: string;
@@ -210,11 +212,6 @@ export function canMove(
 
 export function shouldReact(event: Message, ts: string) {
   return Boolean(ts && !event?._slack_changed_event_ts);
-}
-
-export function issueChannel(name: string, prefix: string) {
-  if (!name.startsWith(prefix + "-")) return false;
-  return /^\p{Decimal_Number}+(?:-|$)/u.test(name.slice(prefix.length + 1));
 }
 
 interface BuildHost {
