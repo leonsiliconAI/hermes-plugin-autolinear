@@ -1,4 +1,4 @@
-import { agentGroup, marker, slackPermalink } from "./slack.ts";
+import { agentGroup, marker, slackPermalink } from "#slack";
 
 type Message = Record<string, unknown> & {
   client_msg_id?: string;
