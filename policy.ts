@@ -99,10 +99,16 @@ export function taskPrompt(inIssue: boolean, report: boolean, bot: string) {
       "turns used `stay`. Do not post `stay` for a delegated agent's report. "
     : "This is a Linear issue's channel. End the turn with one line of its own that tells " +
       "Autolinear what to do with the channel. ";
-  const stay = report ? "" : ", or `stay` (leave the status as it is)";
+  const stay = report
+    ? ""
+    : ", or `stay` (keep the status; after your 👀 moved the issue to Executing, that means the " +
+      "status it had before, and it's refused when there was none)";
   const dispatch = report
     ? ""
-    : "Choose and coordinate agents as the work requires. Use `move executing` while delegated work is active. " +
+    : "Choose and coordinate agents as the work requires. Use `move executing --until <duration>` while " +
+      "delegated work is active. Executing is a lease: once its `--until` has passed and nothing has " +
+      "happened in the channel for 15 minutes (no turn of yours running there, no posts), the issue " +
+      "goes to Leon. " +
       "When results come back, verify them and set the status based on what remains. " +
       "Keep device-only verification pending until it runs. ";
   const reminder = report
@@ -120,7 +126,8 @@ export function taskPrompt(inIssue: boolean, report: boolean, bot: string) {
     '`move trigger --who "<who>"` (waiting on someone else), ' +
     '`move trigger --event "<what>" --stop YYYY-MM-DD` (waiting for an event until a stop date), ' +
     "`move date --start <RFC 3339 time or YYYY-MM-DD>` (work starts later), " +
-    "`move executing` (a delegated agent is working on it)" +
+    "`move executing --until <45m, 2h or an RFC 3339 time, at most 24h>` (a delegated agent is " +
+    "still working on it; without `--until` it holds for an hour)" +
     stay +
     ". " +
     dispatch +
