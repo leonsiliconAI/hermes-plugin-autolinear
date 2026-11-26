@@ -35,6 +35,7 @@ import functools
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 _PATCHED_ATTR = "_autolinear_patched"
 _PENDING_ATTR = "_autolinear_pending"
+_CLAIMS_ATTR = "_autolinear_claims"
 _warned_guard = False
 
 #: Settings, from Hermes's environment ($HERMES_HOME/.env). Without the first two, the plugin is off.
@@ -139,6 +141,33 @@ async def _request_intake(settings: dict, payload: dict) -> Optional[dict]:
         "autolinear: left %s:%s alone (%s); answering it there",
         payload["channel"], payload["ts"], result.get("skipped"))
     return None
+
+
+def _first_delivery(adapter, team_id: str, channel_id: str, ts: str) -> bool:
+    """False for a second event of one of Leon's messages that Hermes accepted within KEEP_SECONDS.
+
+    Slack sends a link's unfurl as a ``message_changed`` edit with an event ts of its own, a second
+    or two after the message. Hermes drops the edit once it has claimed the message's ts, but it
+    claims the ts only after its gates, which take longer than that while Hermes Cloud's CPU is
+    throttled, or when a reconnect delivers both at once. Then both pass (LEON-540, 2026-11-26):
+    they became two turns on one message id, Hermes refused the second, whose text had the unfurl
+    in it, and its refusal took the place of the answer on the task card. Only messages Hermes is
+    sure to answer are claimed, so an ignored message can't keep a later edit that mentions Hermes
+    from being answered. The check and the claim run with no await between them, so of two
+    concurrent events exactly one goes on."""
+    claims = getattr(adapter, _CLAIMS_ATTR, None)
+    if claims is None:
+        claims = {}
+        setattr(adapter, _CLAIMS_ATTR, claims)
+    now = time.monotonic()
+    for key, at in list(claims.items()):
+        if now - at > KEEP_SECONDS:
+            del claims[key]
+    key = (team_id, channel_id, ts)
+    if key in claims:
+        return False
+    claims[key] = now
+    return True
 
 
 def _pending(adapter) -> dict:
@@ -327,11 +356,20 @@ def wire(native, adapter) -> None:
             return accepted
         try:
             normalized, team_id, channel_id = accepted
-            if isinstance(normalized, dict) and _answers_for_sure(
-                    adapter, settings, normalized, str(team_id or "")):
-                await _start(
-                    adapter, settings, normalized, str(channel_id or ""), str(team_id or ""),
-                    tasks)
+            if not isinstance(normalized, dict):
+                return accepted
+            team, ts = str(team_id or ""), str(normalized.get("ts") or "")
+            edit = bool(normalized.get("_slack_changed_event_ts"))
+            # An edit is judged as the message it changes: an unfurl leaves Leon's text as it was.
+            sure = _answers_for_sure(adapter, settings, {
+                key: value for key, value in normalized.items() if key != "_slack_changed_event_ts"
+            }, team)
+            if sure and ts and not _first_delivery(adapter, team, str(channel_id or ""), ts):
+                logger.info("autolinear: %s:%s came in twice at once (with its unfurl edit); "
+                            "Hermes answers it once", channel_id, ts)
+                return None
+            if sure and not edit:
+                await _start(adapter, settings, normalized, str(channel_id or ""), team, tasks)
         except Exception:
             logger.warning("autolinear: could not start early", exc_info=True)
         return accepted

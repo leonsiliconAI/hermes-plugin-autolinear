@@ -387,6 +387,30 @@ async def test_the_link_edit_and_the_live_copy_start_no_second_turn(adapter, int
     adapter._app.client.chat_postMessage.assert_not_awaited()
 
 
+@pytest.mark.parametrize("edit_first", [False, True])
+@pytest.mark.asyncio
+async def test_a_message_and_its_unfurl_arriving_together_start_one_turn(adapter, intake, edit_first):
+    # LEON-540, 2026-11-26: Leon's DM had two links. Its unfurl edit reached Hermes before Hermes
+    # had claimed the message's ts (after a reconnect, and whenever the throttled CPU slows the
+    # gates), both passed its dedup and became turns on the copy's ts. The second had the unfurl
+    # text, so Hermes refused it ("already received a different message under this message id").
+    guard.wire(None, adapter)
+    plugin.wire(None, adapter)
+    ts = "1794000000.000055"
+    original = _message(DM, ts, text="open <https://myaccount.google.com>")
+    edit = {"type": "message", "subtype": "message_changed", "channel": DM, "channel_type": "im",
+            "ts": "1794000000.000056", "event_ts": "1794000000.000056",
+            "message": {**original, "attachments": [{"title": "Google Account",
+                                                      "from_url": "https://myaccount.google.com",
+                                                      "text": "Manage your Google Account"}]}}
+    events = (edit, original) if edit_first else (original, edit)
+
+    await asyncio.gather(*(adapter._handle_slack_message(event) for event in events))
+
+    _turn(adapter)
+    assert len(intake.requests) == 1
+
+
 @pytest.mark.parametrize("react_first", [True, False])
 @pytest.mark.asyncio
 async def test_the_copy_gets_reactions_whichever_plugin_wires_first(adapter, intake, react_first):
