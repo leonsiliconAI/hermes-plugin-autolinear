@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from ._pythonmonkey import acall, acall_with_host, call, on_host
+from ._bridge import acall, acall_with_host, call, on_host
 
 logger = logging.getLogger(__name__)
 
