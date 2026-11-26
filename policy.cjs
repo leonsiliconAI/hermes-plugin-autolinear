@@ -11,6 +11,16 @@ function issueChannel(name, prefix) {
 	return /^\p{Decimal_Number}+(?:-|$)/u.test(name.slice(prefix.length + 1));
 }
 // policy.ts
+/**
+* Where Leon's messages become new issues: his DM with Hermes and project channels (`project-…`).
+* Anywhere else, task channels included, Hermes answers in place. A channel whose name couldn't be
+* read (Hermes then has only its ID) never qualifies.
+*/
+const projectPrefix = "project-";
+function intakeChannel(channel, name) {
+	if (channel.startsWith("D")) return true;
+	return Boolean(name) && name !== channel && name.startsWith("project-");
+}
 function ordinary(event) {
 	return !(event._hermes_reaction || event._hermes_force_process || event.bot_id || typeof event.client_msg_id === "string" && event.client_msg_id.startsWith("de1e6a7e-"));
 }
@@ -114,11 +124,13 @@ exports.applyPrompt = applyPrompt;
 exports.buildReply = buildReply;
 exports.canMove = canMove;
 exports.copiedMessage = copiedMessage;
+exports.intakeChannel = intakeChannel;
 exports.intakePayload = intakePayload;
 exports.intakeResponse = intakeResponse;
 exports.issueChannel = issueChannel;
 exports.issueNote = issueNote;
 exports.ordinary = ordinary;
+exports.projectPrefix = projectPrefix;
 exports.requestIntake = requestIntake;
 exports.shouldReact = shouldReact;
 exports.taskPrompt = taskPrompt;

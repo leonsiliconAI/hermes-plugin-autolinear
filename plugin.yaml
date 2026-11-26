@@ -1,8 +1,8 @@
 name: autolinear
 label: autolinear
-version: 1.7.0
+version: 1.8.0
 description: >
-  Gives each of Leon's Slack messages outside an issue channel its own Linear issue (Awaiting
+  Gives each of Leon's Slack messages in his Hermes DM or a project channel its own Linear issue (Awaiting
   Init) and channel through autolinear. Acknowledges intake and gives Hermes the issue context
   and status commands for its own turn.
 author: leonsilicon

@@ -4,11 +4,11 @@ Hermes plugin that gives each of Leon's Slack messages its own Linear issue and 
 
 ## Why
 
-Every message Leon sends to Hermes outside an issue channel gets a new Linear issue in Awaiting Init and its own Slack channel. AutoLinear edits his message to link the channel where Hermes answers and follows up on the work.
+Every message Leon sends to Hermes in his DM or a project channel (`project-…`) gets a new Linear issue in Awaiting Init and its own Slack channel. AutoLinear edits his message to link the channel where Hermes answers and follows up on the work.
 
 ## What happens
 
-1. Leon writes to Hermes outside an issue channel: a DM, `#general`, a project channel, a reply under a `#feed-` post.
+1. Leon writes to Hermes in his DM or a project channel (`#project-…`), at the top or in a thread.
 2. Once the message reaches Hermes and passes dedup and the bot check, the plugin calls `POST /intake` in the background. AutoLinear creates the issue, opens its `leon-<n>-<first words>` channel, and posts a copy of the message there as Leon. Once Slack confirms the copy, AutoLinear replaces the original message with the channel link.
 3. Hermes adds 👀 to acknowledge the request. It keeps the message, Slack thread context and file links when AutoLinear moves the request. In an existing issue channel, the handoff uses Leon's conversation there.
 4. Hermes handles the request in its own model turn. [slack-flat-replies](../hermes-plugin-slack-flat-replies/README.md) keeps top-level requests and threaded requests in their respective conversations.
@@ -16,7 +16,7 @@ Every message Leon sends to Hermes outside an issue channel gets a new Linear is
 
 ## Which messages
 
-A message moves when Hermes answers it, Leon (`AUTOLINEAR_USER_ID`) wrote it, it isn't a command (`/new`, `!stop`) or a reaction-triggered turn, and it isn't in an issue channel (`leon-<number>` or `leon-<number>-…`) or in `AUTOLINEAR_SKIP_CHANNELS`. Otherwise Hermes answers where it is, as before.
+A message moves when Hermes answers it, Leon (`AUTOLINEAR_USER_ID`) wrote it, it isn't a command (`/new`, `!stop`) or a reaction-triggered turn, and it's in his DM or a channel whose name starts with `project-`, not in `AUTOLINEAR_SKIP_CHANNELS`. Everywhere else, task channels (`leon-<number>-…`) and `#feed-` channels included, Hermes answers where it is. So does a channel whose name Hermes couldn't read: Hermes caches the channel's ID as its name when Slack's lookup fails, so the plugin drops that cache entry and doesn't guess (Leon 2026-11-26, after Slack timeouts turned four "mark as done" replies in task channels into new issues).
 
 The early start, before Hermes's own gates have run (`_prefilter_inbound`), is only for messages Hermes always answers: also no `/` or `!` at the start and no mention of anyone but Hermes. Anything else that Hermes ends up answering starts when its turn is built (`_build_message_event`, which runs only after the gates), a little later. An early start whose message Hermes then doesn't answer is logged (`made LEON-… but Hermes didn't answer that message`).
 

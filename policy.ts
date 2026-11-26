@@ -22,6 +22,18 @@ const issueScope =
   "Keep this Linear issue's title and Slack channel name. Create a separate Linear issue " +
   "for new work, link it to this issue, and let the sync open its own Slack channel.";
 
+/**
+ * Where Leon's messages become new issues: his DM with Hermes and project channels (`project-…`).
+ * Anywhere else, task channels included, Hermes answers in place. A channel whose name couldn't be
+ * read (Hermes then has only its ID) never qualifies.
+ */
+export const projectPrefix = "project-";
+
+export function intakeChannel(channel: string, name: string) {
+  if (channel.startsWith("D")) return true;
+  return Boolean(name) && name !== channel && name.startsWith(projectPrefix);
+}
+
 export function ordinary(event: Message) {
   return !(
     event._hermes_reaction ||

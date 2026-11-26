@@ -30,12 +30,14 @@ guard = _load("slack_as_leon_guard", _HERE.parent / "hermes-plugin-slack-as-leon
 always_react = _load("slack_always_react", _HERE.parent / "hermes-plugin-slack-always-react" / "__init__.py")
 
 LEON, HERMES = "U0LEON00001", "U0HERMES001"
-DM, GENERAL, ISSUE, NEW = "D0LEONDM01", "C0GENERAL1", "C0ISSUE001", "C0NEWISSUE"
+DM, PROJECT, ISSUE, NEW = "D0LEONDM01", "C0PROJECT1", "C0ISSUE001", "C0NEWISSUE"
+GENERAL = "C0GENERAL1"
 COPY_TS = "1794000000.000900"
 CHANNELS = {
     DM: {"id": DM, "is_im": True, "user": LEON},
-    GENERAL: {"id": GENERAL, "name": "general"},
+    PROJECT: {"id": PROJECT, "name": "project-2026-11-26"},
     ISSUE: {"id": ISSUE, "name": "leon-12-fix-the-printer"},
+    GENERAL: {"id": GENERAL, "name": "general"},
     NEW: {"id": NEW, "name": "leon-401-check-rogers"},
 }
 RESULT = {
@@ -145,15 +147,15 @@ async def test_replies_in_a_muse_handoff_thread_stay_in_it(adapter, intake):
     root = "1794000000.000005"
     plugin.wire(None, adapter)
     adapter._hermes22muse_handoff_thread = (
-        lambda team, channel, thread: (channel, thread) == (GENERAL, root))
+        lambda team, channel, thread: (channel, thread) == (PROJECT, root))
     adapter._app.client.conversations_replies = AsyncMock(return_value={"ok": True, "messages": []})
 
     await adapter._handle_slack_message(
-        _message(GENERAL, "1794000000.000006", "use the other card", thread_ts=root))
+        _message(PROJECT, "1794000000.000006", "use the other card", thread_ts=root))
 
     assert intake.requests == []
     turn = _turn(adapter)
-    assert (turn.source.chat_id, turn.source.thread_id) == (GENERAL, root)
+    assert (turn.source.chat_id, turn.source.thread_id) == (PROJECT, root)
     assert "Autolinear" not in (turn.channel_prompt or "")
 
 
@@ -195,10 +197,10 @@ async def test_a_thread_reply_keeps_its_thread_context(adapter, intake):
         {"ts": "1794000000.000011", "user": LEON, "text": "wait for the slip", "thread_ts": root},
     ]})
     await adapter._handle_slack_message(
-        _message(GENERAL, "1794000000.000011", "wait for the slip", thread_ts=root))
+        _message(PROJECT, "1794000000.000011", "wait for the slip", thread_ts=root))
 
     assert intake.requests[0]["thread_ts"] == root
-    assert intake.requests[0]["where"] == "a thread in #general"
+    assert intake.requests[0]["where"] == "a thread in #project-2026-11-26"
     turn = _turn(adapter)
     assert turn.source.chat_id == NEW
     assert turn.source.thread_id == COPY_TS, "the copy starts its own thread in the issue channel"
@@ -207,7 +209,7 @@ async def test_a_thread_reply_keeps_its_thread_context(adapter, intake):
 
 
 @pytest.mark.parametrize("event", [
-    _message(GENERAL, "1794000000.000021", user="U0SOMEONE1"),  # not Leon
+    _message(PROJECT, "1794000000.000021", user="U0SOMEONE1"),  # not Leon
     _message(ISSUE, "1794000000.000022", "/new"),  # a command in an issue channel
 ])
 @pytest.mark.asyncio
@@ -326,10 +328,36 @@ async def test_off_without_its_token(adapter, intake, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skipped_channels_are_answered_in_place(adapter, intake, monkeypatch):
-    monkeypatch.setenv(plugin.SKIP_ENV, f"C0OTHER001, {GENERAL}")
+async def test_only_dms_and_project_channels_start_issues(adapter, intake):
     plugin.wire(None, adapter)
-    await adapter._handle_slack_message(_message(GENERAL, "1794000000.000041"))
+    await adapter._handle_slack_message(_message(GENERAL, "1794000000.000042"))
+    assert intake.requests == []
+    assert _turn(adapter).source.chat_id == GENERAL
+
+
+@pytest.mark.asyncio
+async def test_a_task_channel_slack_wont_name_is_answered_in_place(adapter, intake):
+    """2026-11-26: Slack timed out, Hermes cached the channel's ID as its name, and four "mark as
+    done" replies in task channels became new issues."""
+    adapter._app.client.conversations_info = AsyncMock(side_effect=TimeoutError())
+    plugin.wire(None, adapter)
+    await adapter._handle_slack_message(_message(ISSUE, "1794000000.000043", "mark as done"))
+    assert intake.requests == []
+    assert _turn(adapter).source.chat_id == ISSUE
+    # The ID isn't kept as the channel's name: once Slack answers, the turn knows its channel again.
+    adapter._app.client.conversations_info = AsyncMock(
+        return_value={"ok": True, "channel": CHANNELS[ISSUE]})
+    adapter.handle_message.reset_mock()
+    await adapter._handle_slack_message(_message(ISSUE, "1794000000.000044", "mark as done"))
+    assert intake.requests == []
+    assert _turn(adapter).source.chat_name == "leon-12-fix-the-printer"
+
+
+@pytest.mark.asyncio
+async def test_skipped_channels_are_answered_in_place(adapter, intake, monkeypatch):
+    monkeypatch.setenv(plugin.SKIP_ENV, f"C0OTHER001, {PROJECT}")
+    plugin.wire(None, adapter)
+    await adapter._handle_slack_message(_message(PROJECT, "1794000000.000041"))
     assert intake.requests == []
 
 
@@ -364,7 +392,7 @@ async def test_the_link_edit_and_the_live_copy_start_no_second_turn(adapter, int
 async def test_the_copy_gets_reactions_whichever_plugin_wires_first(adapter, intake, react_first):
     for module in ((always_react, plugin) if react_first else (plugin, always_react)):
         module.wire(None, adapter)
-    await adapter._handle_slack_message(_message(GENERAL, "1794000000.000060"))
+    await adapter._handle_slack_message(_message(PROJECT, "1794000000.000060"))
     turn = _turn(adapter)
     assert adapter._reacting_target(turn) is not None
 
@@ -408,7 +436,7 @@ async def test_the_intake_starts_before_hermes_reads_the_thread_or_files(adapter
 
 
 def test_early_intake_ignores_a_command_after_hermes_mention(adapter, intake):
-    event = _message(GENERAL, "1794000000.000072", f"<@{adapter._bot_user_id}> !orca Check CI")
+    event = _message(PROJECT, "1794000000.000072", f"<@{adapter._bot_user_id}> !orca Check CI")
     assert not plugin._answers_for_sure(adapter, plugin._settings(), event, "")
     assert intake.requests == []
 

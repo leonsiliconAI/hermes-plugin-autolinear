@@ -1,7 +1,7 @@
 """Give each of Leon's Slack messages its own Linear issue and channel the moment it arrives.
 
-Leon's rule (2026-11-21): every message he sends Hermes in Slack outside an issue channel becomes a
-new Linear issue in Awaiting Init (the team's default status) with its own channel, at once; his
+Leon's rule (2026-11-21, narrowed 2026-11-26): every message he sends Hermes in his DM or a project
+channel (``project-…``) becomes a new Linear issue in Awaiting Init (the team's default status) with its own channel, at once; his
 message is edited to link the channel, and Hermes answers, and keeps the conversation going, there.
 
 autolinear (autolinear.leonsilicon.ai) does the work: it creates the issue and the channel, edits
@@ -10,8 +10,9 @@ posts, then answers with the channel and the copy's ts. The plugin wraps two sea
 
 - ``_prefilter_inbound``: the moment one of Leon's messages has passed dedup and the bot check, it
   starts the request in the background, before Hermes reads the thread or downloads files. Only
-  messages Hermes is sure to answer start this early: Leon's, outside an issue channel, not a
-  command, mentioning no one but Hermes.
+  messages Hermes is sure to answer start this early: Leon's, in his DM or a project channel, not a
+  command, mentioning no one but Hermes. Replies in task channels, and messages in any channel
+  whose name Hermes couldn't read, stay where they are.
 - ``_build_message_event``: runs only after every gate (auth, channel, mention, bot) has accepted a
   message, so it sees exactly the messages Hermes answers. It waits for the request started early,
   or starts it then, and builds the turn as if Leon had written the copy: same text, files and
@@ -176,7 +177,13 @@ async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id:
     if _in_muse_thread(adapter, event, team_id, channel_id, ts):
         return None
     name = str(await adapter._resolve_channel_name(channel_id, team_id=team_id) or "")
-    if call(__file__, "issueChannel", name, settings["prefix"]):
+    if not channel_id.startswith("D") and name in ("", channel_id):
+        # Hermes caches the channel's ID as its name when Slack's lookup fails (timeouts while
+        # Hermes Cloud's CPU is starved, 2026-11-26), so this channel could well be a task channel.
+        _forget_channel_name(adapter, team_id, channel_id)
+        logger.warning("autolinear: no name for %s; answering %s there", channel_id, ts)
+        return None
+    if not call(__file__, "intakeChannel", channel_id, name):
         return None
     global _warned_guard
     if not getattr(adapter, "_slack_as_leon_guard_patched", False) and not _warned_guard:
@@ -205,6 +212,17 @@ async def _start(adapter, settings: dict, event: dict, channel_id: str, team_id:
 
     task.add_done_callback(forget)
     return task
+
+
+def _forget_channel_name(adapter, team_id: str, channel_id: str) -> None:
+    """Drop the ID Hermes cached as the channel's name, so its next lookup asks Slack again."""
+    cache = getattr(adapter, "_channel_name_cache", None)
+    if not isinstance(cache, dict):
+        return
+    teams = {str(team_id or ""), str(getattr(adapter, "_channel_team", {}).get(channel_id, "") or "")}
+    for team in teams:
+        if cache.get((team, channel_id)) in ("", channel_id):
+            cache.pop((team, channel_id), None)
 
 
 def _in_muse_thread(adapter, event: dict, team_id: str, channel_id: str, ts: str) -> bool:
